@@ -399,7 +399,7 @@ Item {
 
         Item {
           width: parent.width
-          height: Style.space(58)
+          height: Style.space(55)
 
           Column {
             anchors.left: parent.left
@@ -436,6 +436,7 @@ Item {
             height: parent.height
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenterOffset: 4
             spacing: Style.spacing.xs
 
             Text {
