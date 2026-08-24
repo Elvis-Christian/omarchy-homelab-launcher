@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.elvis-christian.homelab-launcher",
+  "name": "HomeLab Launcher",
+  "version": "1.0.0",
+  "author": "Elvis Christian",
+  "description": "A compact, theme-aware launcher for HomeLab services and favorite links",
+  "license": "MIT",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Launcher.qml"
+  }
+}
