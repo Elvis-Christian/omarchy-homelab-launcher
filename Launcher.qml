@@ -17,6 +17,7 @@ Item {
   property bool editMode: false
   property bool addOpen: false
   property bool dataReady: false
+  property int editingSourceIndex: -1
   property string formError: ""
   property string filterText: ""
   property int selectedIndex: 0
@@ -71,7 +72,7 @@ Item {
       var parsed = JSON.parse(raw || "{}")
       services = Array.isArray(parsed.services) ? parsed.services : []
     } catch (e) {
-      console.warn("HomeLab Launcher: services.json inválido:", e)
+      console.warn("HomeLab Launcher: invalid services.json:", e)
       services = []
     }
     rebuild()
@@ -118,7 +119,7 @@ Item {
     }
     if (editMode && !needle) {
       displayModel.append({
-        name: "Novo atalho",
+        name: "New shortcut",
         url: "",
         icon: "",
         iconScale: 1,
@@ -202,6 +203,7 @@ Item {
   function toggleEditMode() {
     editMode = !editMode
     addOpen = false
+    editingSourceIndex = -1
     filterText = ""
     searchMode = false
     selectedIndex = 0
@@ -247,6 +249,7 @@ Item {
   }
 
   function openAddDialog() {
+    editingSourceIndex = -1
     addOpen = true
     formError = ""
     nameField.text = ""
@@ -255,33 +258,55 @@ Item {
     Qt.callLater(function() { nameField.forceActiveFocus() })
   }
 
+  function openEditDialog(sourceIndex) {
+    if (sourceIndex < 0 || sourceIndex >= services.length) return
+    var service = services[sourceIndex]
+    editingSourceIndex = sourceIndex
+    addOpen = true
+    formError = ""
+    nameField.text = String(service.name || "")
+    urlField.text = String(service.url || "")
+    iconField.text = String(service.icon || "")
+    Qt.callLater(function() { nameField.forceActiveFocus() })
+  }
+
   function closeAddDialog() {
     addOpen = false
+    editingSourceIndex = -1
     formError = ""
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  function addService() {
+  function saveService() {
     var name = nameField.text.trim()
     var url = urlField.text.trim()
     var icon = iconField.text.trim()
     if (!name || !url || !icon) {
-      formError = "Preencha nome, endereço e ícone."
+      formError = "Enter a name, address, and icon."
       return
     }
     if (!/^(https?:\/\/|file:\/\/|\/)/i.test(icon) && !/\.(svg|png)$/i.test(icon)) {
-      formError = "Use uma URL, caminho local ou arquivo SVG/PNG."
+      formError = "Use a URL, local path, or SVG/PNG file."
       return
     }
     for (var i = 0; i < services.length; i++) {
-      if (String(services[i].url || "") === url) {
-        formError = "Esse endereço já existe."
+      if (i !== editingSourceIndex && String(services[i].url || "") === url) {
+        formError = "This address already exists."
         return
       }
     }
     var next = services.slice()
-    next.push({ name: name, url: url, icon: icon, group: "HomeLab" })
+    if (editingSourceIndex >= 0 && editingSourceIndex < next.length) {
+      next[editingSourceIndex] = Object.assign({}, next[editingSourceIndex], {
+        name: name,
+        url: url,
+        icon: icon
+      })
+    } else {
+      next.push({ name: name, url: url, icon: icon, group: "HomeLab" })
+    }
     addOpen = false
+    editingSourceIndex = -1
     persistServices(next)
   }
 
@@ -409,7 +434,7 @@ Item {
 
             Text {
               width: parent.width
-              text: root.searchMode ? ("HOMELAB  /  " + (root.filterText || "BUSCAR…")) : "HOMELAB"
+              text: root.searchMode ? ("HOMELAB  /  " + (root.filterText || "SEARCH…")) : "HOMELAB"
               color: root.foreground
               font.family: Style.font.menuFamily
               font.pixelSize: Style.font.title
@@ -420,7 +445,7 @@ Item {
             Text {
               id: countLabel
               width: parent.width
-              text: root.editMode ? "arraste para reorganizar" : (root.services.length + " atalhos")
+              text: root.editMode ? "drag to reorder" : (root.services.length + " shortcuts")
               color: root.foreground
               font.family: Style.font.menuFamily
               font.pixelSize: Style.font.caption
@@ -462,7 +487,7 @@ Item {
 
               PanelToolTip {
                 visible: editSwitch.containsMouse
-                text: root.editMode ? "Sair da edição" : "Editar atalhos"
+                text: root.editMode ? "Exit edit mode" : "Edit shortcuts"
                 fontFamily: Style.font.menuFamily
               }
             }
@@ -520,7 +545,7 @@ Item {
               id: serviceContent
               anchors.fill: parent
               anchors.leftMargin: Style.spacing.lg + 3
-              anchors.rightMargin: Style.spacing.xxl
+              anchors.rightMargin: root.editMode && !isAdd && !isSpacer ? Style.space(66) : Style.spacing.xxl
               spacing: Style.spacing.lg
               visible: true
 
@@ -569,7 +594,7 @@ Item {
                 id: serviceName
                 width: parent.width - iconWell.width - parent.spacing
                 anchors.verticalCenter: parent.verticalCenter
-                text: isAdd ? "Novo atalho" : name
+                text: isAdd ? "New shortcut" : name
                 color: index === root.selectedIndex ? root.selectedText : root.foreground
                 font.family: Style.font.menuFamily
                 font.pixelSize: Style.font.bodySmall
@@ -578,36 +603,36 @@ Item {
               }
             }
 
-            Rectangle {
+            Row {
               visible: root.editMode && !isAdd && !isSpacer
               z: 10
-              width: Style.space(25)
-              height: width
               anchors.top: parent.top
               anchors.right: parent.right
               anchors.margins: Style.spacing.sm
-              radius: width / 2
-              color: removeMouse.containsMouse ? Util.alpha(Color.urgent, 0.30) : Util.alpha(Color.urgent, 0.16)
-              border.width: 1
-              border.color: Util.alpha(Color.urgent, 0.72)
+              spacing: Style.spacing.xs
 
-              Text {
-                anchors.centerIn: parent
-                text: "−"
-                color: root.foreground
-                font.family: Style.font.menuFamily
-                font.pixelSize: Style.font.title
+              PanelActionButton {
+                iconText: "✎"
+                tooltipText: "Edit shortcut"
+                foreground: root.foreground
+                hoverColor: Color.accent
+                fontFamily: Style.font.menuFamily
+                fontSize: Style.font.body
+                size: Style.space(24)
+                bordered: true
+                onClicked: root.openEditDialog(sourceIndex)
               }
 
-              MouseArea {
-                id: removeMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: function(mouse) {
-                  mouse.accepted = true
-                  root.deleteService(sourceIndex)
-                }
+              PanelActionButton {
+                iconText: "×"
+                tooltipText: "Delete shortcut"
+                foreground: root.foreground
+                hoverColor: Color.urgent
+                fontFamily: Style.font.menuFamily
+                fontSize: Style.font.title
+                size: Style.space(24)
+                bordered: true
+                onClicked: root.deleteService(sourceIndex)
               }
             }
 
@@ -667,7 +692,7 @@ Item {
             spacing: Style.spacing.xxl
 
             Text {
-              text: "NOVO ATALHO"
+              text: root.editingSourceIndex >= 0 ? "EDIT SHORTCUT" : "NEW SHORTCUT"
               color: root.foreground
               font.family: Style.font.menuFamily
               font.pixelSize: Style.font.title
@@ -677,27 +702,27 @@ Item {
             TextField {
               id: nameField
               width: parent.width
-              placeholderText: "Nome"
+              placeholderText: "Name"
               onAccepted: urlField.forceActiveFocus()
             }
 
             TextField {
               id: urlField
               width: parent.width
-              placeholderText: "Endereço — https://… ou http://…"
+              placeholderText: "Address — https://… or http://…"
               onAccepted: iconField.forceActiveFocus()
             }
 
             TextField {
               id: iconField
               width: parent.width
-              placeholderText: "Ícone — URL ou caminho para SVG/PNG"
-              onAccepted: root.addService()
+              placeholderText: "Icon — URL or path to SVG/PNG"
+              onAccepted: root.saveService()
             }
 
             Text {
               width: parent.width
-              text: root.formError || "O ícone pode ser uma URL, caminho absoluto ou nome de arquivo em assets/."
+              text: root.formError || "The icon can be a URL, absolute path, or file name in assets/."
               color: root.formError ? Color.urgent : Color.muted
               font.family: Style.font.menuFamily
               font.pixelSize: Style.font.caption
@@ -711,18 +736,18 @@ Item {
               spacing: Style.spacing.lg
 
               Button {
-                text: "Cancelar"
+                text: "Cancel"
                 bordered: true
                 focusable: true
                 onClicked: root.closeAddDialog()
               }
 
               Button {
-                text: "Adicionar"
+                text: root.editingSourceIndex >= 0 ? "Save" : "Add"
                 selected: true
                 bordered: true
                 focusable: true
-                onClicked: root.addService()
+                onClicked: root.saveService()
               }
             }
           }

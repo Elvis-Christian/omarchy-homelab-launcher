@@ -12,7 +12,7 @@ Keep the services you use every day one keystroke away. Search instantly, naviga
 - Compact five-column layout with stable card sizing while searching
 - Keyboard navigation with arrow keys, `h/j/k/l`, and `Tab`
 - Instant search by typing or pressing `/`
-- Add, remove, and drag-to-reorder editing mode
+- Add, edit, remove, and drag-to-reorder shortcuts
 - SVG and PNG icons from URLs, absolute paths, or the plugin's `assets/` directory
 - Personal data stored in `~/.config/omarchy/homelab-launcher/services.json`
 
