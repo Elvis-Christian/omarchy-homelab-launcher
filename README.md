@@ -24,6 +24,8 @@ omarchy plugin add https://github.com/Elvis-Christian/omarchy-homelab-launcher.g
 
 Add a keybinding to `~/.config/hypr/bindings.lua`:
 
+`Super + Y` is a particularly nice fit on German keyboards — easy to reach, with no layout gymnastics.
+
 ```lua
 o.bind("SUPER + Y", "HomeLab launcher", "omarchy-shell shell toggle io.github.elvis-christian.homelab-launcher")
 ```
