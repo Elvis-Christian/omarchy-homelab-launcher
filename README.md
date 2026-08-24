@@ -1,6 +1,10 @@
 # HomeLab Launcher for Omarchy
 
-A compact, keyboard-friendly launcher for HomeLab services and favorite links. It follows the active Omarchy theme and stores each user's links outside the plugin checkout, so updates never replace personal data.
+A fast, keyboard-first home for everything you host and visit. HomeLab Launcher turns `Super + Y` into a clean command center for servers, dashboards, tools, and favorite links — styled automatically by the active Omarchy theme.
+
+![HomeLab Launcher preview](preview.png)
+
+Keep the services you use every day one keystroke away. Search instantly, navigate without leaving the keyboard, and switch into edit mode whenever you want to add, remove, or rearrange a shortcut. Personal links live outside the plugin checkout, so updates never replace your setup.
 
 ## Features
 

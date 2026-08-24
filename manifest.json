@@ -4,7 +4,7 @@
   "name": "HomeLab Launcher",
   "version": "1.0.0",
   "author": "Elvis Christian",
-  "description": "A compact, theme-aware launcher for HomeLab services and favorite links",
+  "description": "Open your HomeLab services and favorite links from one fast, theme-aware Omarchy launcher",
   "license": "MIT",
   "kinds": [
     "overlay"
