@@ -43,7 +43,7 @@ Item {
   readonly property int cardWidth: Math.min(Style.space(1000), panel.width - Style.gapsOut * 8)
   readonly property int cardHeight: Math.min(Style.space(650), panel.height - Style.gapsOut * 8)
   readonly property int cellWidth: Math.floor(grid.width / columns)
-  readonly property int cellHeight: Math.floor(grid.height / rows)
+  readonly property int cellHeight: Math.floor((grid.height - grid.topMargin) / rows)
 
   function open(_payloadJson) {
     opened = true
@@ -502,6 +502,7 @@ Item {
           height: parent.height - y
           clip: true
           interactive: false
+          topMargin: Style.space(8)
           model: displayModel
           cellWidth: root.cellWidth
           cellHeight: root.cellHeight
