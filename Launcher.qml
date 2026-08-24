@@ -424,7 +424,7 @@ Item {
 
         Item {
           width: parent.width
-          height: Style.space(55)
+          height: Style.space(50)
 
           Column {
             anchors.left: parent.left
