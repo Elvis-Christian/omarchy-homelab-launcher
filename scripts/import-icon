@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Validate and atomically import a local launcher icon."""
+
+import hashlib
+import os
+import re
+import struct
+import sys
+import tempfile
+import urllib.parse
+import xml.etree.ElementTree as ET
+import zlib
+from pathlib import Path
+
+MAX_BYTES = 2 * 1024 * 1024
+MAX_DIMENSION = 2048
+MAX_SVG_BYTES = 256 * 1024
+MAX_SVG_ELEMENTS = 1000
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def resolve_source(value, assets_dir):
+    if re.match(r"^https?://", value, re.IGNORECASE):
+        fail("Remote icons are not supported.")
+    if value.lower().startswith("file://"):
+        parsed = urllib.parse.urlparse(value)
+        if parsed.netloc not in ("", "localhost"):
+            fail("Only local file URLs are supported.")
+        value = urllib.parse.unquote(parsed.path)
+    path = Path(value) if os.path.isabs(value) else Path(assets_dir) / value
+    try:
+        path = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        fail("Icon file does not exist.")
+    if not path.is_file():
+        fail("Icon must be a regular file.")
+    return path
+
+
+def validate_png(data):
+    if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        fail("The selected file is not a valid PNG image.")
+    offset = 8
+    chunks = []
+    while offset + 12 <= len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(data):
+            fail("The selected file is not a valid PNG image.")
+        chunk_type = data[offset + 4:offset + 8]
+        chunk_data = data[offset + 8:offset + 8 + length]
+        expected_crc = struct.unpack(">I", data[offset + 8 + length:chunk_end])[0]
+        if zlib.crc32(chunk_type + chunk_data) & 0xFFFFFFFF != expected_crc:
+            fail("The selected file is not a valid PNG image.")
+        chunks.append((chunk_type, chunk_data))
+        offset = chunk_end
+        if chunk_type == b"IEND":
+            break
+    if offset != len(data) or not chunks or chunks[0][0] != b"IHDR" or len(chunks[0][1]) != 13:
+        fail("The selected file is not a valid PNG image.")
+    if not any(kind == b"IDAT" for kind, _ in chunks) or chunks[-1][0] != b"IEND":
+        fail("The selected file is not a valid PNG image.")
+    width, height = struct.unpack(">II", chunks[0][1][:8])
+    if not width or not height or width > MAX_DIMENSION or height > MAX_DIMENSION:
+        fail(f"PNG dimensions must not exceed {MAX_DIMENSION}×{MAX_DIMENSION}.")
+    return ".png"
+
+
+def validate_svg(data):
+    if len(data) > MAX_SVG_BYTES:
+        fail("SVG icons must be no larger than 256 KiB.")
+    prefix = data[:4096].lower()
+    if b"<!doctype" in prefix or b"<!entity" in prefix:
+        fail("SVG files with DOCTYPE or entities are not supported.")
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        fail("The selected file is not a valid SVG image.")
+    if root.tag.split("}")[-1].lower() != "svg":
+        fail("The selected XML file is not an SVG image.")
+    forbidden = {"script", "foreignobject", "image", "iframe", "audio", "video"}
+    remote = re.compile(r"(?:https?:|file:|//)", re.IGNORECASE)
+    unsafe_url = re.compile(r"url\s*\(\s*(?!['\"]?#)", re.IGNORECASE)
+    for index, element in enumerate(root.iter(), start=1):
+        if index > MAX_SVG_ELEMENTS:
+            fail(f"SVG icons must not exceed {MAX_SVG_ELEMENTS} elements.")
+        if element.tag.split("}")[-1].lower() in forbidden:
+            fail("SVG files with embedded or executable content are not supported.")
+        for name, value in element.attrib.items():
+            if name.split("}")[-1].lower() == "href" and not value.lstrip().startswith("#"):
+                fail("SVG files with external references are not supported.")
+        values = list(element.attrib.values())
+        if element.text:
+            values.append(element.text)
+        for value in values:
+            if remote.search(value) or unsafe_url.search(value):
+                fail("SVG files with external references are not supported.")
+    return ".svg"
+
+
+def main():
+    if len(sys.argv) != 4:
+        fail("Usage: import-icon SOURCE ASSETS_DIR DESTINATION_DIR")
+    source = resolve_source(sys.argv[1], sys.argv[2])
+    try:
+        size = source.stat().st_size
+    except OSError:
+        fail("Could not inspect icon file.")
+    if size <= 0 or size > MAX_BYTES:
+        fail("Icon must be non-empty and no larger than 2 MiB.")
+    try:
+        with source.open("rb") as icon_file:
+            data = icon_file.read(MAX_BYTES + 1)
+    except OSError:
+        fail("Could not read icon file.")
+    if len(data) > MAX_BYTES:
+        fail("Icon must be no larger than 2 MiB.")
+    extension = validate_png(data) if data.startswith(b"\x89PNG") else validate_svg(data)
+
+    destination_dir = Path(sys.argv[3])
+    destination_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if destination_dir.is_symlink() or not destination_dir.is_dir():
+        fail("Managed icon destination must be a real directory.")
+    os.chmod(destination_dir, 0o700)
+    destination = destination_dir / (hashlib.sha256(data).hexdigest() + extension)
+    if not destination.exists():
+        handle, temporary_name = tempfile.mkstemp(prefix=".icon-", dir=destination_dir)
+        try:
+            with os.fdopen(handle, "wb") as temporary:
+                temporary.write(data)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.chmod(temporary_name, 0o600)
+            os.replace(temporary_name, destination)
+        finally:
+            if os.path.exists(temporary_name):
+                os.unlink(temporary_name)
+    elif destination.is_file() and not destination.is_symlink():
+        os.chmod(destination, 0o600)
+    else:
+        fail("Managed icon destination is not a regular file.")
+    print(destination)
+
+
+if __name__ == "__main__":
+    main()

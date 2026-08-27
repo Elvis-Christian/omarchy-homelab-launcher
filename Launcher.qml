@@ -23,6 +23,9 @@ Item {
   property int selectedIndex: 0
   property int layoutContentCount: 0
   property var services: []
+  property bool importingIcon: false
+  property bool iconImportTimedOut: false
+  property var pendingService: null
 
   readonly property string pluginId: "io.github.elvis-christian.homelab-launcher"
   readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/" + pluginId
@@ -44,6 +47,10 @@ Item {
   readonly property int cardHeight: Math.min(Style.space(650), panel.height - Style.gapsOut * 8)
   readonly property int cellWidth: Math.floor(grid.width / columns)
   readonly property int cellHeight: Math.floor((grid.height - grid.topMargin) / rows)
+  readonly property int maxServices: 200
+  readonly property int maxNameLength: 100
+  readonly property int maxUrlLength: 2048
+  readonly property int maxIconPathLength: 4096
 
   function open(_payloadJson) {
     opened = true
@@ -70,7 +77,25 @@ Item {
   function loadServices(raw) {
     try {
       var parsed = JSON.parse(raw || "{}")
-      services = Array.isArray(parsed.services) ? parsed.services : []
+      var incoming = Array.isArray(parsed.services) ? parsed.services : []
+      var safeServices = []
+      for (var i = 0; i < incoming.length && safeServices.length < maxServices; i++) {
+        var service = incoming[i]
+        if (!service || typeof service !== "object") continue
+        var name = typeof service.name === "string" ? service.name.trim() : ""
+        var url = typeof service.url === "string" ? service.url.trim() : ""
+        var icon = typeof service.icon === "string" ? service.icon.trim() : ""
+        if (!name || name.length > maxNameLength || !safeHttpUrl(url) || !safeIconReference(icon)) continue
+        safeServices.push({
+          name: name,
+          url: url,
+          icon: icon,
+          group: typeof service.group === "string" ? service.group.slice(0, maxNameLength) : "HomeLab",
+          iconScale: Math.max(0.25, Math.min(2, Number(service.iconScale) || 1)),
+          monochrome: service.monochrome === true
+        })
+      }
+      services = safeServices
     } catch (e) {
       console.warn("HomeLab Launcher: invalid services.json:", e)
       services = []
@@ -81,6 +106,17 @@ Item {
   function normalized(value) {
     return String(value || "").toLowerCase()
       .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  }
+
+  function safeHttpUrl(value) {
+    var url = String(value || "").trim()
+    return url.length <= maxUrlLength && /^https?:\/\/[^\s]+$/i.test(url)
+  }
+
+  function safeIconReference(value) {
+    var icon = String(value || "").trim()
+    if (!icon || icon.length > maxIconPathLength || /^https?:\/\//i.test(icon)) return false
+    return !/^file:\/\//i.test(icon) || /^file:\/\/(?:localhost)?\//i.test(icon)
   }
 
   function bestColumnCount(count) {
@@ -183,13 +219,22 @@ Item {
     }
     if (editMode) return
     var target = row.url
+    if (!safeHttpUrl(target)) {
+      console.warn("HomeLab Launcher: blocked unsafe shortcut URL")
+      return
+    }
     dismiss()
     Quickshell.execDetached(["xdg-open", target])
   }
 
   function iconSource(value) {
     var icon = String(value || "").trim()
-    if (/^https?:\/\//i.test(icon) || /^file:\/\//i.test(icon)) return icon
+    // Never hand remote URLs to QML's image loader. This plugin stays loaded in
+    // omarchy-shell, and that loader provides no per-request deadline or response
+    // size limit. Returning an empty source also protects existing configurations
+    // that may still contain a remote icon.
+    if (!safeIconReference(icon)) return ""
+    if (/^file:\/\//i.test(icon)) return icon
     if (icon.charAt(0) === "/") return "file://" + icon
     return "file://" + assetsDir + "/" + icon
   }
@@ -271,6 +316,7 @@ Item {
   }
 
   function closeAddDialog() {
+    if (importingIcon) return
     addOpen = false
     editingSourceIndex = -1
     formError = ""
@@ -278,6 +324,7 @@ Item {
   }
 
   function saveService() {
+    if (importingIcon) return
     var name = nameField.text.trim()
     var url = urlField.text.trim()
     var icon = iconField.text.trim()
@@ -285,8 +332,28 @@ Item {
       formError = "Enter a name, address, and icon."
       return
     }
-    if (!/^(https?:\/\/|file:\/\/|\/)/i.test(icon) && !/\.(svg|png)$/i.test(icon)) {
-      formError = "Use a URL, local path, or SVG/PNG file."
+    if (name.length > maxNameLength) {
+      formError = "Name must not exceed " + maxNameLength + " characters."
+      return
+    }
+    if (!safeHttpUrl(url)) {
+      formError = "Address must be an HTTP or HTTPS URL."
+      return
+    }
+    if (icon.length > maxIconPathLength) {
+      formError = "Icon path is too long."
+      return
+    }
+    if (editingSourceIndex < 0 && services.length >= maxServices) {
+      formError = "The launcher supports up to " + maxServices + " shortcuts."
+      return
+    }
+    if (!safeIconReference(icon)) {
+      formError = "Only local SVG/PNG icon paths are supported."
+      return
+    }
+    if (!/^(file:\/\/|\/)/i.test(icon) && !/\.(svg|png)$/i.test(icon)) {
+      formError = "Use a local path or SVG/PNG file from assets/."
       return
     }
     for (var i = 0; i < services.length; i++) {
@@ -295,19 +362,14 @@ Item {
         return
       }
     }
-    var next = services.slice()
-    if (editingSourceIndex >= 0 && editingSourceIndex < next.length) {
-      next[editingSourceIndex] = Object.assign({}, next[editingSourceIndex], {
-        name: name,
-        url: url,
-        icon: icon
-      })
-    } else {
-      next.push({ name: name, url: url, icon: icon, group: "HomeLab" })
-    }
-    addOpen = false
-    editingSourceIndex = -1
-    persistServices(next)
+    pendingService = ({ name: name, url: url, icon: icon, sourceIndex: editingSourceIndex })
+    importingIcon = true
+    iconImportTimedOut = false
+    formError = "Importing icon…"
+    iconImportProcess.command = [root.pluginDir + "/scripts/import-icon", icon,
+                                 root.assetsDir, root.dataDir + "/icons"]
+    iconImportTimeout.restart()
+    iconImportProcess.running = true
   }
 
   ListModel { id: displayModel }
@@ -322,6 +384,64 @@ Item {
       }
       root.dataReady = true
       servicesFile.reload()
+    }
+  }
+
+  Process {
+    id: iconImportProcess
+    stdout: StdioCollector { id: iconImportOutput; waitForEnd: true }
+    stderr: StdioCollector { id: iconImportError; waitForEnd: true }
+    onExited: function(exitCode) {
+      iconImportTimeout.stop()
+      root.importingIcon = false
+      if (root.iconImportTimedOut) {
+        root.iconImportTimedOut = false
+        root.pendingService = null
+        return
+      }
+      if (exitCode !== 0 || !root.pendingService) {
+        root.formError = String(iconImportError.text || "Could not import icon.").trim()
+        root.pendingService = null
+        return
+      }
+      var importedIcon = String(iconImportOutput.text || "").trim()
+      if (!importedIcon) {
+        root.formError = "Could not import icon."
+        root.pendingService = null
+        return
+      }
+      var pending = root.pendingService
+      var next = root.services.slice()
+      if (pending.sourceIndex >= 0 && pending.sourceIndex < next.length) {
+        next[pending.sourceIndex] = Object.assign({}, next[pending.sourceIndex], {
+          name: pending.name, url: pending.url, icon: importedIcon
+        })
+      } else {
+        next.push({ name: pending.name, url: pending.url, icon: importedIcon, group: "HomeLab" })
+      }
+      root.pendingService = null
+      root.addOpen = false
+      root.editingSourceIndex = -1
+      root.persistServices(next)
+    }
+  }
+
+  Timer {
+    id: iconImportTimeout
+    interval: 10000
+    onTriggered: {
+      if (!root.importingIcon) return
+      root.iconImportTimedOut = true
+      root.formError = iconImportProcess.running
+        ? "Icon import timed out."
+        : "Could not start icon importer."
+      if (iconImportProcess.running) {
+        iconImportProcess.running = false
+      } else {
+        root.iconImportTimedOut = false
+        root.importingIcon = false
+        root.pendingService = null
+      }
     }
   }
 
@@ -717,13 +837,13 @@ Item {
             TextField {
               id: iconField
               width: parent.width
-              placeholderText: "Icon — URL or path to SVG/PNG"
+              placeholderText: "Icon — local path to SVG/PNG"
               onAccepted: root.saveService()
             }
 
             Text {
               width: parent.width
-              text: root.formError || "The icon can be a URL, absolute path, or file name in assets/."
+              text: root.formError || "The icon can be an absolute path or file name in assets/."
               color: root.formError ? Color.urgent : Color.muted
               font.family: Style.font.menuFamily
               font.pixelSize: Style.font.caption
@@ -738,13 +858,15 @@ Item {
 
               Button {
                 text: "Cancel"
+                enabled: !root.importingIcon
                 bordered: true
                 focusable: true
                 onClicked: root.closeAddDialog()
               }
 
               Button {
-                text: root.editingSourceIndex >= 0 ? "Save" : "Add"
+                text: root.importingIcon ? "Importing…" : (root.editingSourceIndex >= 0 ? "Save" : "Add")
+                enabled: !root.importingIcon
                 selected: true
                 bordered: true
                 focusable: true

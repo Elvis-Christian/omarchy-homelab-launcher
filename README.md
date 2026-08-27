@@ -13,7 +13,9 @@ Keep the services you use every day one keystroke away. Search instantly, naviga
 - Keyboard navigation with arrow keys, `h/j/k/l`, and `Tab`
 - Instant search by typing or pressing `/`
 - Add, edit, remove, and drag-to-reorder shortcuts
-- SVG and PNG icons from URLs, absolute paths, or the plugin's `assets/` directory
+- HTTP and HTTPS shortcut addresses with validation before opening
+- SVG and PNG icons from absolute paths or the plugin's `assets/` directory
+- Validated icons copied to `~/.config/omarchy/homelab-launcher/icons/`
 - Personal data stored in `~/.config/omarchy/homelab-launcher/services.json`
 
 ## Install
@@ -69,7 +71,7 @@ Remove the `SUPER + Y` binding from `~/.config/hypr/bindings.lua`, then run:
 omarchy plugin remove io.github.elvis-christian.homelab-launcher
 ```
 
-Personal links remain in `~/.config/omarchy/homelab-launcher/services.json`. Delete that directory manually only if you also want to remove your launcher data.
+Personal links and imported icons remain in `~/.config/omarchy/homelab-launcher/`. Delete that directory manually only if you also want to remove your launcher data.
 
 ## Dependencies and permissions
 
@@ -77,7 +79,14 @@ Personal links remain in `~/.config/omarchy/homelab-launcher/services.json`. Del
 - Quickshell and Hyprland as provided by Omarchy
 - `xdg-open` to launch URLs
 
-The plugin runs unsandboxed as part of `omarchy-shell`. It creates and updates only `~/.config/omarchy/homelab-launcher/services.json` and opens user-configured URLs through `xdg-open`. It does not require root privileges, network downloads, install hooks, or additional packages.
+The plugin runs unsandboxed as part of `omarchy-shell`. It creates and updates `~/.config/omarchy/homelab-launcher/services.json` and its private `icons/` directory, and opens validated HTTP or HTTPS URLs through `xdg-open`. Icons must be local PNG or SVG files, are validated before use, and copied atomically under a content-derived name. PNG files are limited to 2 MiB and 2048×2048; SVG files are limited to 256 KiB and 1000 elements, and executable, embedded, or external content is rejected. Icon imports have a 10-second deadline. Remote icon URLs are never fetched by `omarchy-shell`. It does not require root privileges, network downloads, install hooks, or additional packages beyond Python as provided by Omarchy.
+
+## Test
+
+```bash
+omarchy plugin validate .
+python3 -m unittest discover -s tests -v
+```
 
 ## License
 
