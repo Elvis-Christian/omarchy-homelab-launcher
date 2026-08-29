@@ -102,6 +102,8 @@ class ServicesStoreTests(unittest.TestCase):
         self.assertNotIn("packagedIconReference", qml)
         self.assertNotIn('return "file://" + assetsDir', qml)
         self.assertNotIn('if (icon.charAt(0) === "/") return "file://" + icon', qml)
+        self.assertIn("readonly property int maxServices: 50", qml)
+        self.assertIn("output.length <= 180000", qml)
 
 
 if __name__ == "__main__":

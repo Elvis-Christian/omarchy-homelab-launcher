@@ -14,6 +14,7 @@ import unittest
 import zlib
 
 SCRIPT = pathlib.Path(__file__).parents[1] / "scripts" / "import-icon"
+MAX_BYTES = 128 * 1024
 
 
 def png_chunk(kind, data):
@@ -87,8 +88,8 @@ class ImportIconTests(unittest.TestCase):
     def test_oversized_and_malformed_pngs_are_rejected(self):
         oversized = self.root / "oversized.png"
         with oversized.open("wb") as output:
-            output.truncate(2 * 1024 * 1024 + 1)
-        self.assert_rejected(oversized, "no larger than 2 MiB")
+            output.truncate(MAX_BYTES + 1)
+        self.assert_rejected(oversized, "no larger than 128 KiB")
         malformed = self.root / "malformed.png"
         malformed.write_bytes(valid_png()[:-4])
         self.assert_rejected(malformed, "valid PNG")

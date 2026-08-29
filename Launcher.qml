@@ -55,7 +55,7 @@ Item {
   readonly property int cardHeight: Math.min(Style.space(650), panel.height - Style.gapsOut * 8)
   readonly property int cellWidth: Math.floor(grid.width / columns)
   readonly property int cellHeight: Math.floor((grid.height - grid.topMargin) / rows)
-  readonly property int maxServices: 200
+  readonly property int maxServices: 50
   readonly property int maxNameLength: 100
   readonly property int maxUrlLength: 2048
   readonly property int maxIconPathLength: 4096
@@ -478,7 +478,9 @@ Item {
       var icon = root.activeManagedIcon
       var output = String(managedIconOutput.text || "").trim()
       var cache = Object.assign({}, root.iconCache)
-      cache[icon] = exitCode === 0 && output.length <= 2800000
+      // 128 KiB becomes at most ~175 KiB after base64 encoding. Together
+      // with maxServices this also bounds the aggregate in-shell icon cache.
+      cache[icon] = exitCode === 0 && output.length <= 180000
         && /^data:image\/(?:png|svg\+xml);base64,/.test(output) ? output : ""
       root.iconCache = cache
       var pending = Object.assign({}, root.iconReadPending)

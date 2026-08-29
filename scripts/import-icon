@@ -14,9 +14,9 @@ import xml.etree.ElementTree as ET
 import zlib
 from pathlib import Path
 
-MAX_BYTES = 2 * 1024 * 1024
-MAX_DIMENSION = 2048
-MAX_SVG_BYTES = 256 * 1024
+MAX_BYTES = 128 * 1024
+MAX_DIMENSION = 512
+MAX_SVG_BYTES = 128 * 1024
 MAX_SVG_ELEMENTS = 1000
 
 
@@ -50,7 +50,7 @@ def read_source(value, assets_dir="", nofollow=False):
         if not stat.S_ISREG(metadata.st_mode):
             fail("Icon must be a regular file.")
         if metadata.st_size <= 0 or metadata.st_size > MAX_BYTES:
-            fail("Icon must be non-empty and no larger than 2 MiB.")
+            fail("Icon must be non-empty and no larger than 128 KiB.")
         chunks = []
         remaining = MAX_BYTES + 1
         while remaining:
@@ -65,7 +65,7 @@ def read_source(value, assets_dir="", nofollow=False):
     finally:
         os.close(descriptor)
     if not data or len(data) > MAX_BYTES:
-        fail("Icon must be non-empty and no larger than 2 MiB.")
+        fail("Icon must be non-empty and no larger than 128 KiB.")
     return path, data
 
 
@@ -159,7 +159,7 @@ def validate_png(data):
 
 def validate_svg(data):
     if len(data) > MAX_SVG_BYTES:
-        fail("SVG icons must be no larger than 256 KiB.")
+        fail("SVG icons must be no larger than 128 KiB.")
     lowered = data.lower()
     if b"<!doctype" in lowered or b"<!entity" in lowered or b"<?xml-stylesheet" in lowered:
         fail("SVG files with DTDs, entities, or external stylesheets are not supported.")
