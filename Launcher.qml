@@ -26,11 +26,15 @@ Item {
   property bool importingIcon: false
   property bool iconImportTimedOut: false
   property var pendingService: null
+  property bool servicesReadPending: false
+  property string pendingServicesWrite: ""
+  property string activeServicesWrite: ""
 
   readonly property string pluginId: "io.github.elvis-christian.homelab-launcher"
   readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/" + pluginId
   readonly property string dataDir: Quickshell.env("HOME") + "/.config/omarchy/homelab-launcher"
   readonly property string assetsDir: pluginDir + "/assets"
+  readonly property string servicesPath: dataDir + "/services.json"
   readonly property color background: Color.menu.background
   readonly property color foreground: Color.menu.text
   readonly property color borderColor: Color.menu.border
@@ -241,8 +245,27 @@ Item {
 
   function persistServices(nextServices) {
     services = nextServices
-    servicesFile.setText(JSON.stringify({ services: nextServices }, null, 2) + "\n")
+    pendingServicesWrite = JSON.stringify({ services: nextServices })
+    startServicesWrite()
     rebuild()
+  }
+
+  function requestServicesRead() {
+    if (!dataReady) return
+    if (servicesReadProcess.running) {
+      servicesReadPending = true
+      return
+    }
+    servicesReadTimeout.restart()
+    servicesReadProcess.running = true
+  }
+
+  function startServicesWrite() {
+    if (servicesWriteProcess.running || !pendingServicesWrite) return
+    activeServicesWrite = pendingServicesWrite
+    pendingServicesWrite = ""
+    servicesWriteTimeout.restart()
+    servicesWriteProcess.running = true
   }
 
   function toggleEditMode() {
@@ -383,8 +406,54 @@ Item {
         return
       }
       root.dataReady = true
-      servicesFile.reload()
+      root.requestServicesRead()
     }
+  }
+
+  Process {
+    id: servicesReadProcess
+    command: [root.pluginDir + "/scripts/services-store", "read", root.servicesPath]
+    stdout: StdioCollector { id: servicesReadOutput; waitForEnd: true }
+    stderr: StdioCollector { id: servicesReadError; waitForEnd: true }
+    onExited: function(exitCode) {
+      servicesReadTimeout.stop()
+      if (exitCode === 0) root.loadServices(servicesReadOutput.text)
+      else {
+        console.warn("HomeLab Launcher:", String(servicesReadError.text || "Could not read services safely.").trim())
+        root.loadServices("")
+      }
+      if (root.servicesReadPending) {
+        root.servicesReadPending = false
+        root.requestServicesRead()
+      }
+    }
+  }
+
+  Process {
+    id: servicesWriteProcess
+    command: [root.pluginDir + "/scripts/services-store", "write", root.servicesPath]
+    stdinEnabled: true
+    stderr: StdioCollector { id: servicesWriteError; waitForEnd: true }
+    onStarted: write(root.activeServicesWrite + "\n")
+    onExited: function(exitCode) {
+      servicesWriteTimeout.stop()
+      root.activeServicesWrite = ""
+      if (exitCode !== 0)
+        console.warn("HomeLab Launcher:", String(servicesWriteError.text || "Could not save services safely.").trim())
+      root.startServicesWrite()
+    }
+  }
+
+  Timer {
+    id: servicesReadTimeout
+    interval: 3000
+    onTriggered: if (servicesReadProcess.running) servicesReadProcess.running = false
+  }
+
+  Timer {
+    id: servicesWriteTimeout
+    interval: 3000
+    onTriggered: if (servicesWriteProcess.running) servicesWriteProcess.running = false
   }
 
   Process {
@@ -448,20 +517,11 @@ Item {
   Component.onCompleted: dataDirProcess.running = true
 
   FileView {
-    id: servicesFile
-    path: root.dataDir + "/services.json"
+    path: root.dataReady ? root.servicesPath : ""
     watchChanges: true
-    atomicWrites: true
+    preload: false
     printErrors: false
-    onLoaded: {
-      var raw = text()
-      if (root.dataReady && String(raw || "").trim() === "") {
-        raw = JSON.stringify({ services: [] }, null, 2) + "\n"
-        setText(raw)
-      }
-      root.loadServices(raw)
-    }
-    onFileChanged: reload()
+    onFileChanged: root.requestServicesRead()
   }
 
   PanelWindow {

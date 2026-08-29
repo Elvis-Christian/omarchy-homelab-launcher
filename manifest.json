@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.elvis-christian.homelab-launcher",
   "name": "HomeLab Launcher",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "Elvis Christian",
   "description": "Open your HomeLab services and favorite links from one fast, theme-aware Omarchy launcher",
   "license": "MIT",

@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Read and write launcher services without trusting the configuration path."""
+
+import json
+import os
+import secrets
+import stat
+import sys
+from pathlib import Path
+
+MAX_BYTES = 512 * 1024
+
+
+def fail(message, code=1):
+    print(message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def open_parent(path, create=False):
+    parent = Path(path).parent
+    if create:
+        try:
+            parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError:
+            fail("Could not create the launcher data directory.")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(parent, flags)
+    except OSError:
+        fail("Launcher data directory must be a real directory.")
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        fail("Launcher data directory must be a real directory.")
+    return descriptor
+
+
+def read_config(path):
+    directory = open_parent(path)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        try:
+            descriptor = os.open(Path(path).name, flags, dir_fd=directory)
+        except FileNotFoundError:
+            sys.stdout.write('{"services":[]}\n')
+            return
+        except OSError:
+            fail("Services file must be a regular file, not a symlink or pipe.")
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            fail("Services file must be a regular file, not a symlink or pipe.")
+        if metadata.st_size > MAX_BYTES:
+            fail("Services file is too large.")
+        chunks = []
+        remaining = MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > MAX_BYTES:
+            fail("Services file is too large.")
+        try:
+            text = data.decode("utf-8")
+            json.loads(text)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            fail("Services file is not valid UTF-8 JSON.")
+        sys.stdout.write(text)
+    finally:
+        try:
+            os.close(descriptor)
+        except UnboundLocalError:
+            pass
+        os.close(directory)
+
+
+def write_config(path):
+    data = sys.stdin.buffer.readline(MAX_BYTES + 2)
+    if not data.endswith(b"\n"):
+        fail("Services data is too large or incomplete.")
+    data = data[:-1]
+    if len(data) > MAX_BYTES:
+        fail("Services data is too large.")
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("Services data is not valid UTF-8 JSON.")
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("services"), list):
+        fail("Services data has an invalid structure.")
+
+    directory = open_parent(path, create=True)
+    destination = Path(path).name
+    temporary = ".services-" + secrets.token_hex(12)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=directory)
+        view = memoryview(data + b"\n")
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(temporary, destination, src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
+    except OSError:
+        fail("Could not save services safely.")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        os.close(directory)
+
+
+def main():
+    if len(sys.argv) != 3 or sys.argv[1] not in ("read", "write"):
+        fail("Usage: services-store read|write PATH")
+    if Path(sys.argv[2]).name != "services.json":
+        fail("Configuration path must end in services.json.")
+    if sys.argv[1] == "read":
+        read_config(sys.argv[2])
+    else:
+        write_config(sys.argv[2])
+
+
+if __name__ == "__main__":
+    main()

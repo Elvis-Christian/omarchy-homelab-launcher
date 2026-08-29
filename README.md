@@ -79,7 +79,7 @@ Personal links and imported icons remain in `~/.config/omarchy/homelab-launcher/
 - Quickshell and Hyprland as provided by Omarchy
 - `xdg-open` to launch URLs
 
-The plugin runs unsandboxed as part of `omarchy-shell`. It creates and updates `~/.config/omarchy/homelab-launcher/services.json` and its private `icons/` directory, and opens validated HTTP or HTTPS URLs through `xdg-open`. Icons must be local PNG or SVG files, are validated before use, and copied atomically under a content-derived name. PNG files are limited to 2 MiB and 2048×2048; SVG files are limited to 256 KiB and 1000 elements, and executable, embedded, or external content is rejected. Icon imports have a 10-second deadline. Remote icon URLs are never fetched by `omarchy-shell`. It does not require root privileges, network downloads, install hooks, or additional packages beyond Python as provided by Omarchy.
+The plugin runs unsandboxed as part of `omarchy-shell`. It creates and updates `~/.config/omarchy/homelab-launcher/services.json` and its private `icons/` directory, and opens validated HTTP or HTTPS URLs through `xdg-open`. The services file is limited to 512 KiB and read only through a nonblocking, no-follow regular-file descriptor; writes use an atomic replacement. Icons must be local PNG or SVG files, are validated before use, and copied atomically under a content-derived name. PNG files are limited to 2 MiB and 2048×2048; SVG files to 256 KiB and 1000 elements, and executable, embedded, or external content is rejected. Helper processes have deadlines. Remote icon URLs are never fetched by `omarchy-shell`. It does not require root privileges, network downloads, install hooks, or additional packages beyond Python as provided by Omarchy.
 
 ## Test
 
