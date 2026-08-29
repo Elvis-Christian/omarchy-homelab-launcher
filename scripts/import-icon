@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Validate and atomically import a local launcher icon."""
 
+import base64
 import hashlib
 import os
 import re
+import secrets
+import stat
 import struct
 import sys
-import tempfile
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zlib
@@ -23,7 +25,7 @@ def fail(message):
     raise SystemExit(1)
 
 
-def resolve_source(value, assets_dir):
+def source_path(value, assets_dir):
     if re.match(r"^https?://", value, re.IGNORECASE):
         fail("Remote icons are not supported.")
     if value.lower().startswith("file://"):
@@ -31,14 +33,99 @@ def resolve_source(value, assets_dir):
         if parsed.netloc not in ("", "localhost"):
             fail("Only local file URLs are supported.")
         value = urllib.parse.unquote(parsed.path)
-    path = Path(value) if os.path.isabs(value) else Path(assets_dir) / value
+    return Path(value) if os.path.isabs(value) else Path(assets_dir) / value
+
+
+def read_source(value, assets_dir="", nofollow=False):
+    path = source_path(value, assets_dir)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    if nofollow:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        path = path.resolve(strict=True)
-    except (OSError, RuntimeError):
+        descriptor = os.open(path, flags)
+    except OSError:
         fail("Icon file does not exist.")
-    if not path.is_file():
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            fail("Icon must be a regular file.")
+        if metadata.st_size <= 0 or metadata.st_size > MAX_BYTES:
+            fail("Icon must be non-empty and no larger than 2 MiB.")
+        chunks = []
+        remaining = MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    except OSError:
+        fail("Could not read icon file.")
+    finally:
+        os.close(descriptor)
+    if not data or len(data) > MAX_BYTES:
+        fail("Icon must be non-empty and no larger than 2 MiB.")
+    return path, data
+
+
+def open_destination(path):
+    parent = path.parent
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        parent_descriptor = os.open(parent, flags)
+    except OSError:
+        fail("Managed icon parent must be a real directory.")
+    try:
+        try:
+            os.mkdir(path.name, mode=0o700, dir_fd=parent_descriptor)
+        except FileExistsError:
+            pass
+        try:
+            directory = os.open(path.name, flags, dir_fd=parent_descriptor)
+        except OSError:
+            fail("Managed icon destination must be a real directory.")
+    finally:
+        os.close(parent_descriptor)
+    if not stat.S_ISDIR(os.fstat(directory).st_mode):
+        os.close(directory)
         fail("Icon must be a regular file.")
-    return path
+    os.fchmod(directory, 0o700)
+    return directory
+
+
+def store_icon(data, extension, destination_dir):
+    directory = open_destination(Path(destination_dir))
+    destination = hashlib.sha256(data).hexdigest() + extension
+    temporary = ".icon-" + secrets.token_hex(12)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    try:
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=directory)
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                fail("Could not save the imported icon.")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(temporary, destination, src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
+    except OSError:
+        fail("Could not save the imported icon.")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        os.close(directory)
+    return str(Path(destination_dir) / destination)
 
 
 def validate_png(data):
@@ -73,77 +160,65 @@ def validate_png(data):
 def validate_svg(data):
     if len(data) > MAX_SVG_BYTES:
         fail("SVG icons must be no larger than 256 KiB.")
-    prefix = data[:4096].lower()
-    if b"<!doctype" in prefix or b"<!entity" in prefix:
-        fail("SVG files with DOCTYPE or entities are not supported.")
+    lowered = data.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered or b"<?xml-stylesheet" in lowered:
+        fail("SVG files with DTDs, entities, or external stylesheets are not supported.")
     try:
         root = ET.fromstring(data)
     except ET.ParseError:
         fail("The selected file is not a valid SVG image.")
     if root.tag.split("}")[-1].lower() != "svg":
         fail("The selected XML file is not an SVG image.")
-    forbidden = {"script", "foreignobject", "image", "iframe", "audio", "video"}
-    remote = re.compile(r"(?:https?:|file:|//)", re.IGNORECASE)
-    unsafe_url = re.compile(r"url\s*\(\s*(?!['\"]?#)", re.IGNORECASE)
+    forbidden = {
+        "script", "foreignobject", "image", "use", "iframe", "audio", "video",
+        "style", "filter", "animate", "animatemotion", "animatetransform",
+        "set", "discard", "font", "font-face", "font-face-uri",
+    }
+    remote = re.compile(r"(?:https?:|file:|data:|javascript:|//)", re.IGNORECASE)
+    css_url = re.compile(r"url\s*\(([^)]*)\)", re.IGNORECASE)
     for index, element in enumerate(root.iter(), start=1):
         if index > MAX_SVG_ELEMENTS:
             fail(f"SVG icons must not exceed {MAX_SVG_ELEMENTS} elements.")
-        if element.tag.split("}")[-1].lower() in forbidden:
+        local_tag = element.tag.split("}")[-1].lower()
+        if local_tag in forbidden or local_tag.startswith("fe"):
             fail("SVG files with embedded or executable content are not supported.")
         for name, value in element.attrib.items():
-            if name.split("}")[-1].lower() == "href" and not value.lstrip().startswith("#"):
+            local_name = name.split("}")[-1].lower()
+            if local_name.startswith("on"):
+                fail("SVG files with event handlers are not supported.")
+            if local_name == "href" and not value.lstrip().startswith("#"):
                 fail("SVG files with external references are not supported.")
         values = list(element.attrib.values())
         if element.text:
             values.append(element.text)
         for value in values:
-            if remote.search(value) or unsafe_url.search(value):
+            if remote.search(value) or re.search(r"@import\b", value, re.IGNORECASE):
                 fail("SVG files with external references are not supported.")
+            for match in css_url.finditer(value):
+                target = match.group(1).strip().strip("'\"").strip()
+                if not target.startswith("#"):
+                    fail("SVG files with external references are not supported.")
     return ".svg"
 
 
 def main():
-    if len(sys.argv) != 4:
-        fail("Usage: import-icon SOURCE ASSETS_DIR DESTINATION_DIR")
-    source = resolve_source(sys.argv[1], sys.argv[2])
-    try:
-        size = source.stat().st_size
-    except OSError:
-        fail("Could not inspect icon file.")
-    if size <= 0 or size > MAX_BYTES:
-        fail("Icon must be non-empty and no larger than 2 MiB.")
-    try:
-        with source.open("rb") as icon_file:
-            data = icon_file.read(MAX_BYTES + 1)
-    except OSError:
-        fail("Could not read icon file.")
-    if len(data) > MAX_BYTES:
-        fail("Icon must be no larger than 2 MiB.")
+    data_url_mode = len(sys.argv) == 3 and sys.argv[1] == "--data-url"
+    if not data_url_mode and len(sys.argv) != 4:
+        fail("Usage: import-icon SOURCE ASSETS_DIR DESTINATION_DIR | --data-url MANAGED_ICON")
+    source, data = read_source(
+        sys.argv[2] if data_url_mode else sys.argv[1],
+        "" if data_url_mode else sys.argv[2],
+        nofollow=data_url_mode,
+    )
     extension = validate_png(data) if data.startswith(b"\x89PNG") else validate_svg(data)
-
-    destination_dir = Path(sys.argv[3])
-    destination_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if destination_dir.is_symlink() or not destination_dir.is_dir():
-        fail("Managed icon destination must be a real directory.")
-    os.chmod(destination_dir, 0o700)
-    destination = destination_dir / (hashlib.sha256(data).hexdigest() + extension)
-    if not destination.exists():
-        handle, temporary_name = tempfile.mkstemp(prefix=".icon-", dir=destination_dir)
-        try:
-            with os.fdopen(handle, "wb") as temporary:
-                temporary.write(data)
-                temporary.flush()
-                os.fsync(temporary.fileno())
-            os.chmod(temporary_name, 0o600)
-            os.replace(temporary_name, destination)
-        finally:
-            if os.path.exists(temporary_name):
-                os.unlink(temporary_name)
-    elif destination.is_file() and not destination.is_symlink():
-        os.chmod(destination, 0o600)
+    if data_url_mode:
+        expected_name = hashlib.sha256(data).hexdigest() + extension
+        if source.name != expected_name:
+            fail("Managed icon content does not match its content-addressed name.")
+        media_type = "image/png" if extension == ".png" else "image/svg+xml"
+        print("data:" + media_type + ";base64," + base64.b64encode(data).decode("ascii"))
     else:
-        fail("Managed icon destination is not a regular file.")
-    print(destination)
+        print(store_icon(data, extension, sys.argv[3]))
 
 
 if __name__ == "__main__":

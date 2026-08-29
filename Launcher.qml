@@ -29,6 +29,10 @@ Item {
   property bool servicesReadPending: false
   property string pendingServicesWrite: ""
   property string activeServicesWrite: ""
+  property var iconCache: ({})
+  property var iconReadPending: ({})
+  property var iconReadQueue: []
+  property string activeManagedIcon: ""
 
   readonly property string pluginId: "io.github.elvis-christian.homelab-launcher"
   readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/" + pluginId
@@ -89,11 +93,13 @@ Item {
         var name = typeof service.name === "string" ? service.name.trim() : ""
         var url = typeof service.url === "string" ? service.url.trim() : ""
         var icon = typeof service.icon === "string" ? service.icon.trim() : ""
-        if (!name || name.length > maxNameLength || !safeHttpUrl(url) || !safeIconReference(icon)) continue
+        if (!name || name.length > maxNameLength || !safeHttpUrl(url)) continue
         safeServices.push({
           name: name,
           url: url,
-          icon: icon,
+          // Preserve old shortcuts, but never hand an untrusted legacy icon path
+          // to Image. Editing the shortcut imports it into managed storage.
+          icon: safeIconReference(icon) ? icon : "",
           group: typeof service.group === "string" ? service.group.slice(0, maxNameLength) : "HomeLab",
           iconScale: Math.max(0.25, Math.min(2, Number(service.iconScale) || 1)),
           monochrome: service.monochrome === true
@@ -119,8 +125,21 @@ Item {
 
   function safeIconReference(value) {
     var icon = String(value || "").trim()
+    return icon.length <= maxIconPathLength && managedIconReference(icon)
+  }
+
+  function managedIconReference(value) {
+    var icon = String(value || "").trim()
+    var prefix = dataDir + "/icons/"
+    if (icon.indexOf(prefix) !== 0) return false
+    return /^[a-f0-9]{64}\.(?:png|svg)$/.test(icon.slice(prefix.length))
+  }
+
+  function safeIconInput(value) {
+    var icon = String(value || "").trim()
     if (!icon || icon.length > maxIconPathLength || /^https?:\/\//i.test(icon)) return false
-    return !/^file:\/\//i.test(icon) || /^file:\/\/(?:localhost)?\//i.test(icon)
+    if (/^file:\/\//i.test(icon) && !/^file:\/\/(?:localhost)?\//i.test(icon)) return false
+    return /\.(?:png|svg)$/i.test(icon)
   }
 
   function bestColumnCount(count) {
@@ -237,10 +256,32 @@ Item {
     // omarchy-shell, and that loader provides no per-request deadline or response
     // size limit. Returning an empty source also protects existing configurations
     // that may still contain a remote icon.
-    if (!safeIconReference(icon)) return ""
-    if (/^file:\/\//i.test(icon)) return icon
-    if (icon.charAt(0) === "/") return "file://" + icon
-    return "file://" + assetsDir + "/" + icon
+    if (icon === "/usr/share/omarchy/icon.png") return "file://" + icon
+    if (!managedIconReference(icon)) return ""
+    if (iconCache[icon] !== undefined) return iconCache[icon]
+    queueManagedIcon(icon)
+    return ""
+  }
+
+  function queueManagedIcon(icon) {
+    if (iconCache[icon] !== undefined || iconReadPending[icon]) return
+    var pending = Object.assign({}, iconReadPending)
+    pending[icon] = true
+    iconReadPending = pending
+    var queue = iconReadQueue.slice()
+    queue.push(icon)
+    iconReadQueue = queue
+    Qt.callLater(startManagedIconRead)
+  }
+
+  function startManagedIconRead() {
+    if (managedIconProcess.running || iconReadQueue.length === 0) return
+    var queue = iconReadQueue.slice()
+    activeManagedIcon = queue.shift()
+    iconReadQueue = queue
+    managedIconProcess.command = [root.pluginDir + "/scripts/import-icon", "--data-url", activeManagedIcon]
+    managedIconTimeout.restart()
+    managedIconProcess.running = true
   }
 
   function persistServices(nextServices) {
@@ -371,12 +412,8 @@ Item {
       formError = "The launcher supports up to " + maxServices + " shortcuts."
       return
     }
-    if (!safeIconReference(icon)) {
+    if (!safeIconInput(icon)) {
       formError = "Only local SVG/PNG icon paths are supported."
-      return
-    }
-    if (!/^(file:\/\/|\/)/i.test(icon) && !/\.(svg|png)$/i.test(icon)) {
-      formError = "Use a local path or SVG/PNG file from assets/."
       return
     }
     for (var i = 0; i < services.length; i++) {
@@ -398,25 +435,13 @@ Item {
   ListModel { id: displayModel }
 
   Process {
-    id: dataDirProcess
-    command: ["mkdir", "-p", root.dataDir]
-    onExited: function(exitCode) {
-      if (exitCode !== 0) {
-        console.warn("HomeLab Launcher: could not create data directory")
-        return
-      }
-      root.dataReady = true
-      root.requestServicesRead()
-    }
-  }
-
-  Process {
     id: servicesReadProcess
     command: [root.pluginDir + "/scripts/services-store", "read", root.servicesPath]
     stdout: StdioCollector { id: servicesReadOutput; waitForEnd: true }
     stderr: StdioCollector { id: servicesReadError; waitForEnd: true }
     onExited: function(exitCode) {
       servicesReadTimeout.stop()
+      root.dataReady = true
       if (exitCode === 0) root.loadServices(servicesReadOutput.text)
       else {
         console.warn("HomeLab Launcher:", String(servicesReadError.text || "Could not read services safely.").trim())
@@ -442,6 +467,34 @@ Item {
         console.warn("HomeLab Launcher:", String(servicesWriteError.text || "Could not save services safely.").trim())
       root.startServicesWrite()
     }
+  }
+
+  Process {
+    id: managedIconProcess
+    stdout: StdioCollector { id: managedIconOutput; waitForEnd: true }
+    stderr: StdioCollector { id: managedIconError; waitForEnd: true }
+    onExited: function(exitCode) {
+      managedIconTimeout.stop()
+      var icon = root.activeManagedIcon
+      var output = String(managedIconOutput.text || "").trim()
+      var cache = Object.assign({}, root.iconCache)
+      cache[icon] = exitCode === 0 && output.length <= 2800000
+        && /^data:image\/(?:png|svg\+xml);base64,/.test(output) ? output : ""
+      root.iconCache = cache
+      var pending = Object.assign({}, root.iconReadPending)
+      delete pending[icon]
+      root.iconReadPending = pending
+      if (!cache[icon])
+        console.warn("HomeLab Launcher:", String(managedIconError.text || "Could not load managed icon safely.").trim())
+      root.activeManagedIcon = ""
+      root.startManagedIconRead()
+    }
+  }
+
+  Timer {
+    id: managedIconTimeout
+    interval: 3000
+    onTriggered: if (managedIconProcess.running) managedIconProcess.running = false
   }
 
   Timer {
@@ -514,7 +567,10 @@ Item {
     }
   }
 
-  Component.onCompleted: dataDirProcess.running = true
+  Component.onCompleted: {
+    servicesReadTimeout.restart()
+    servicesReadProcess.running = true
+  }
 
   FileView {
     path: root.dataReady ? root.servicesPath : ""

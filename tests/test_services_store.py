@@ -34,9 +34,12 @@ class ServicesStoreTests(unittest.TestCase):
         )
 
     def test_missing_file_reads_as_empty_configuration(self):
+        self.data.rmdir()
         result = self.run_store("read")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {"services": []})
+        self.assertTrue(self.data.is_dir())
+        self.assertEqual(self.data.stat().st_mode & 0o777, 0o700)
 
     def test_regular_file_round_trip_is_atomic(self):
         payload = json.dumps({"services": [{"name": "NAS", "url": "https://nas.test", "icon": "nas.svg"}]})
@@ -91,6 +94,14 @@ class ServicesStoreTests(unittest.TestCase):
         self.assertNotIn("text()", file_view)
         self.assertNotIn("reload()", file_view)
         self.assertNotIn("onLoaded", file_view)
+
+    def test_qml_never_decodes_managed_icons_from_mutable_paths(self):
+        qml = (SCRIPT.parents[1] / "Launcher.qml").read_text()
+        self.assertIn('"--data-url", activeManagedIcon', qml)
+        self.assertIn("managedIconReference(icon)", qml)
+        self.assertNotIn("packagedIconReference", qml)
+        self.assertNotIn('return "file://" + assetsDir', qml)
+        self.assertNotIn('if (icon.charAt(0) === "/") return "file://" + icon', qml)
 
 
 if __name__ == "__main__":
